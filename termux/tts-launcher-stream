@@ -1,0 +1,194 @@
+#!/data/data/com.termux/files/usr/bin/python
+"""Experimental Edge-TTS -> localhost MP3 streaming server for Android.
+
+The *original* tts-launcher-play remains unchanged. No permanent audio files.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import os
+from pathlib import Path
+import re
+import sys
+import time
+
+VOICE = 'ru-RU-DmitryNeural'
+HOST = '127.0.0.1'
+MAX_TEXT_BYTES = 96 * 1024
+IDLE_TIMEOUT_SECONDS = 45
+PLAYBACK_TIMEOUT_SECONDS = 15 * 60
+LOG_LIMIT_BYTES = 16 * 1024
+STATE_DIR = Path.home() / '.cache' / 'termux-tts-launcher-stream'
+LOG_PATH = STATE_DIR / 'last-events.log'
+
+
+def log_event(event: str) -> None:
+    """Only fixed internal event labels, never clipboard text or audio."""
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        if LOG_PATH.exists() and LOG_PATH.stat().st_size >= LOG_LIMIT_BYTES:
+            LOG_PATH.write_text('', encoding='ascii')
+        with LOG_PATH.open('a', encoding='ascii') as file:
+            file.write(f'{time.strftime("%Y-%m-%d %H:%M:%S")} {event}\n')
+    except OSError:
+        pass
+
+
+def valid_token(token: str) -> bool:
+    return bool(re.fullmatch(r'[a-f0-9]{32}', token))
+
+
+class AudioStreamServer:
+    def __init__(self, text: str, port: int, token: str, tts_module=None) -> None:
+        self.text = text
+        self.port = port
+        self.token = token
+        self.tts_module = tts_module
+        self.started = time.monotonic()
+        self.finished = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        self.stream_taken = False
+        self.stream_task: asyncio.Task | None = None
+
+    async def send(self, writer, status: str, body: bytes = b'') -> None:
+        # This endpoint never contains user text or generated speech.
+        response = (f'HTTP/1.1 {status}\r\n'
+                    f'Content-Length: {len(body)}\r\n'
+                    'Connection: close\r\n'
+                    'Cache-Control: no-store\r\n'
+                    '\r\n').encode('ascii')
+        writer.write(response + body)
+        await writer.drain()
+
+    async def client(self, reader, writer) -> None:
+        try:
+            request = await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), 4)
+            if len(request) > 4096:
+                await self.send(writer, '431 Request Header Fields Too Large')
+                return
+            line = request.split(b'\r\n', 1)[0].decode('ascii', errors='replace')
+            fields = line.split(' ')
+            if len(fields) != 3 or fields[0] != 'GET':
+                await self.send(writer, '405 Method Not Allowed')
+                return
+            path = fields[1]
+            if path == f'/health/{self.token}':
+                await self.send(writer, '204 No Content')
+            elif path == f'/stop/{self.token}':
+                log_event('stop_requested')
+                self.cancelled.set()
+                await self.send(writer, '204 No Content')
+                self.finished.set()
+                if self.stream_task and self.stream_task is not asyncio.current_task():
+                    self.stream_task.cancel()
+            elif path == f'/stream/{self.token}':
+                if self.stream_taken:
+                    await self.send(writer, '409 Conflict')
+                    return
+                self.stream_taken = True
+                self.stream_task = asyncio.current_task()
+                await self.stream_mp3(writer)
+            else:
+                await self.send(writer, '404 Not Found')
+        except (asyncio.TimeoutError, asyncio.IncompleteReadError, ConnectionError, BrokenPipeError):
+            pass
+        except Exception as exc:
+            log_event('client_error_' + type(exc).__name__)
+        finally:
+            writer.close()
+            try:
+                await asyncio.wait_for(writer.wait_closed(), 1)
+            except (OSError, asyncio.TimeoutError, ConnectionError):
+                pass
+
+    async def stream_mp3(self, writer) -> None:
+        # Android MediaPlayer may or may not support chunked, unknown-length MP3;
+        # this is deliberately confined to the experimental second app.
+        writer.write(b'HTTP/1.1 200 OK\r\n'
+                     b'Content-Type: audio/mpeg\r\n'
+                     b'Transfer-Encoding: chunked\r\n'
+                     b'Cache-Control: no-store\r\n'
+                     b'Connection: close\r\n\r\n')
+        await writer.drain()
+        if self.tts_module is None:
+            import edge_tts
+            self.tts_module = edge_tts
+        log_event('stream_connected')
+        try:
+            async for item in self.tts_module.Communicate(self.text, voice=VOICE).stream():
+                if self.cancelled.is_set():
+                    break
+                if item['type'] != 'audio' or not item.get('data'):
+                    continue
+                audio = item['data']
+                if not hasattr(self, '_first_packet'):
+                    self._first_packet = True
+                    delta = int((time.monotonic() - self.started) * 1000)
+                    log_event(f'first_audio_packet_ms_{delta}')
+                writer.write(f'{len(audio):x}\r\n'.encode('ascii'))
+                writer.write(audio)
+                writer.write(b'\r\n')
+                await writer.drain()
+            if not self.cancelled.is_set():
+                writer.write(b'0\r\n\r\n')
+                await writer.drain()
+                log_event('stream_completed')
+        except asyncio.CancelledError:
+            log_event('stream_cancelled')
+        except (BrokenPipeError, ConnectionError, OSError):
+            log_event('android_disconnected')
+        except Exception as exc:
+            log_event('edge_error_' + type(exc).__name__)
+        finally:
+            self.finished.set()
+
+    async def serve(self) -> None:
+        async with await asyncio.start_server(self.client, HOST, self.port, limit=4096) as server:
+            log_event('server_ready')
+            try:
+                await asyncio.wait_for(self.finished.wait(), timeout=IDLE_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                if self.stream_task is not None:
+                    try:
+                        await asyncio.wait_for(self.finished.wait(), timeout=PLAYBACK_TIMEOUT_SECONDS)
+                    except asyncio.TimeoutError:
+                        self.stream_task.cancel()
+                        log_event('stream_timeout')
+                else:
+                    log_event('no_player_timeout')
+            finally:
+                self.cancelled.set()
+                if self.stream_task and not self.stream_task.done():
+                    self.stream_task.cancel()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--port', type=int, required=True)
+    parser.add_argument('--token', required=True)
+    args = parser.parse_args()
+    if not 1024 <= args.port <= 65535 or not valid_token(args.token):
+        return 2
+    raw = sys.stdin.buffer.read(MAX_TEXT_BYTES + 1)
+    if not raw or len(raw) > MAX_TEXT_BYTES:
+        log_event('input_invalid')
+        return 2
+    try:
+        text = raw.decode('utf-8').strip()
+    except UnicodeDecodeError:
+        return 2
+    if not text:
+        return 2
+    log_event('start')
+    try:
+        asyncio.run(AudioStreamServer(text, args.port, args.token).serve())
+        return 0
+    except Exception as exc:
+        log_event('server_error_' + type(exc).__name__)
+        print('TTS stream server failed: ' + type(exc).__name__, file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

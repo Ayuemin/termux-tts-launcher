@@ -1,7 +1,7 @@
 name: Build Android APK
 on:
   push:
-    branches: [main]
+    branches: [main, feature/streaming-tts]
     paths:
       - 'android/**'
       - 'termux/**'
@@ -27,14 +27,14 @@ jobs:
           gradle-version: '8.11.1'
       - name: Install Android SDK 35
         run: sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0'
-      - name: Test Termux player logic
+      - name: Test Python player and loopback streaming server
         run: python3 -m unittest discover -s tests -v
-      - name: Build debug APK
+      - name: Build stable and experimental debug APKs
         working-directory: android
-        run: gradle --no-daemon :app:assembleDebug
+        run: gradle --no-daemon :app:assembleDebug :streamapp:assembleDebug
       - uses: actions/upload-artifact@v4
         with:
-          name: termux-tts-launcher-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: termux-tts-stream-experimental-apk
+          path: android/streamapp/build/outputs/apk/debug/streamapp-debug.apk
           if-no-files-found: error
           retention-days: 30
