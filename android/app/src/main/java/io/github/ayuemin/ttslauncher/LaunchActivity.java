@@ -51,25 +51,26 @@ public final class LaunchActivity extends Activity {
         }
         launched = true;
         try {
-            ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-            if (clipboard == null || !clipboard.hasPrimaryClip()) {
-                message("Буфер обмена пуст");
-                return;
+            // A second tap must reach Termux even when clipboard access fails.
+            String text = "";
+            String warning = null;
+            try {
+                ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                if (clipboard != null && clipboard.hasPrimaryClip()) {
+                    ClipData clip = clipboard.getPrimaryClip();
+                    if (clip != null && clip.getItemCount() > 0) {
+                        CharSequence content = clip.getItemAt(0).coerceToText(this);
+                        text = content == null ? "" : content.toString().trim();
+                    }
+                }
+            } catch (RuntimeException e) {
+                text = "";
             }
-            ClipData clip = clipboard.getPrimaryClip();
-            if (clip == null || clip.getItemCount() == 0) {
-                message("Не удалось получить текст из буфера");
-                return;
-            }
-            CharSequence content = clip.getItemAt(0).coerceToText(this);
-            String text = content == null ? "" : content.toString().trim();
             if (text.isEmpty()) {
-                message("В буфере нет текста");
-                return;
-            }
-            if (text.getBytes(StandardCharsets.UTF_8).length > MAX_UTF8_BYTES) {
-                message("Текст слишком большой (максимум 96 КБ)");
-                return;
+                warning = "Буфер пуст: остановка, если чтение активно";
+            } else if (text.getBytes(StandardCharsets.UTF_8).length > MAX_UTF8_BYTES) {
+                text = "";
+                warning = "Текст слишком большой: новый запуск отменён";
             }
             Intent intent = new Intent("com.termux.RUN_COMMAND");
             intent.setClassName(TERMUX_PACKAGE, RUN_SERVICE);
@@ -78,7 +79,7 @@ public final class LaunchActivity extends Activity {
             intent.putExtra("com.termux.RUN_COMMAND_STDIN", text);
             intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true);
             startService(intent);
-            message("Готовлю озвучку…");
+            message(warning != null ? warning : "Озвучка: запуск / остановка");
         } catch (SecurityException e) {
             error("Разрешите запуск команд Termux в настройках приложения");
         } catch (IllegalStateException e) {

@@ -7,8 +7,10 @@ modifies the user's existing `tts` command or audio downloads.
 
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
 import fcntl
+import importlib.util
 import os
 from pathlib import Path
 import re
@@ -19,10 +21,13 @@ import tempfile
 import time
 import uuid
 
+# Lazy import: stop-only invocation should not initialize Edge TTS.
+edge_tts = None
+
 VOICE = "ru-RU-DmitryNeural"
 MAX_INPUT_BYTES = 96 * 1024
-FIRST_CHUNK = 520
-LATER_CHUNK = 1250
+FIRST_CHUNK = 155
+LATER_CHUNK = 650
 WORKERS = 2
 ATTEMPTS = 3
 MEDIA_TIMEOUT = 12
@@ -31,6 +36,7 @@ STATE_DIR = Path.home() / ".cache" / "termux-tts-launcher"
 ACTIVE_FILE = STATE_DIR / "active"
 LOCK_FILE = STATE_DIR / "active.lock"
 AUDIO_PREFIX = "tts-launcher-"
+TIMING_FILE = STATE_DIR / "last-timing.txt"
 
 
 def normalize(text: str) -> str:
@@ -80,7 +86,7 @@ def owned_track(info: str, run_id: str | None = None) -> bool:
     name = re.search(r"^Track:\s*(\S+)", info, flags=re.MULTILINE)
     if not name:
         return False
-    return name.group(1).startswith(AUDIO_PREFIX + (run_id or ""))
+    return Path(name.group(1)).name.startswith(AUDIO_PREFIX + (run_id or ""))
 
 
 def stop_owned(run_id: str | None = None) -> None:
@@ -91,19 +97,56 @@ def stop_owned(run_id: str | None = None) -> None:
         pass
 
 
-def claim(run_id: str) -> None:
+def active_session() -> tuple[str, int | None] | None:
+    """Read the active token and PID; old token-only installations still work."""
+    try:
+        fields = ACTIVE_FILE.read_text(encoding="ascii").split()
+    except OSError:
+        return None
+    if not fields:
+        return None
+    try:
+        pid = int(fields[1]) if len(fields) > 1 else None
+    except ValueError:
+        pid = None
+    return fields[0], pid
+
+
+def pid_running(pid: int | None) -> bool:
+    if pid is None:
+        return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def toggle_session(run_id: str) -> bool:
+    """First tap starts; second tap cancels the currently active run."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     with LOCK_FILE.open("a+") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
-        ACTIVE_FILE.write_text(run_id, encoding="ascii")
-        # Stop only a previous playback created by this tool.
-        stop_owned()
-        fcntl.flock(handle, fcntl.LOCK_UN)
+        try:
+            previous = active_session()
+            if previous is not None:
+                old_id, pid = previous
+                ACTIVE_FILE.unlink(missing_ok=True)
+                # Never stop a track belonging to another app.
+                stop_owned(old_id)
+                if pid_running(pid):
+                    return False
+            ACTIVE_FILE.write_text(f"{run_id} {os.getpid()}\n", encoding="ascii")
+            return True
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def still_active(run_id: str) -> bool:
     try:
-        return ACTIVE_FILE.read_text(encoding="ascii") == run_id
+        return (active_session() or (None, None))[0] == run_id
     except OSError:
         return False
 
@@ -117,36 +160,46 @@ def clear_if_active(run_id: str) -> None:
 
 
 def synthesize(chunk: str, dest: Path, run_id: str) -> Path:
-    # edge-tts connects to Microsoft's speech service; no Chrome, ffmpeg or rich.
-    args = ["edge-tts", "--voice", VOICE, "--text", chunk, "--write-media", str(dest)]
+    """Call edge-tts as a library, avoiding a CLI process for each fragment."""
     error = ""
     for attempt in range(ATTEMPTS):
         if not still_active(run_id):
             raise RuntimeError("Playback replaced by another request")
         try:
-            result = command(args, timeout=90)
-            if result.returncode == 0 and dest.exists() and dest.stat().st_size:
+            global edge_tts
+            if edge_tts is None:
+                import edge_tts as edge_tts_module
+                edge_tts = edge_tts_module
+            asyncio.run(edge_tts.Communicate(chunk, voice=VOICE).save(str(dest)))
+            if dest.exists() and dest.stat().st_size:
                 return dest
-            error = (result.stderr or result.stdout or "edge-tts failed")[-300:]
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            error = str(exc)
+            error = "edge-tts returned no audio"
+        except Exception as exc:
+            error = str(exc)[-300:]
         dest.unlink(missing_ok=True)
         if attempt < ATTEMPTS - 1:
+            if not still_active(run_id):
+                raise RuntimeError("Playback replaced by another request")
             time.sleep(1 + attempt)
     raise RuntimeError(f"Microsoft Edge TTS: {error}")
 
 
-def play_file(path: Path, run_id: str) -> None:
-    if not still_active(run_id):
-        return
-    started = command(["termux-media-player", "play", str(path)])
+def play_file(path: Path, run_id: str, on_started=None) -> None:
+    # The stop tap must not race a new audio segment into playback.
+    with LOCK_FILE.open("a+") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            if not still_active(run_id):
+                return
+            started = command(["termux-media-player", "play", str(path)])
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
     if started.returncode != 0 or not started.stdout.startswith("Now Playing:"):
         raise RuntimeError(f"Media playback failed: {(started.stderr or started.stdout).strip()}")
-    # The API command returns immediately; wait for actual playback completion.
-    # 'info' changes to 'No track currently!' after its completion listener runs.
+    if on_started is not None:
+        on_started()
     saw_owned = False
     no_status_count = 0
-    # A speech segment longer than 20 minutes is not expected at these sizes.
     deadline = time.monotonic() + 20 * 60
     while time.monotonic() < deadline:
         if not still_active(run_id):
@@ -162,40 +215,64 @@ def play_file(path: Path, run_id: str) -> None:
         if owned_track(info, run_id):
             saw_owned = True
         elif "No track currently" in info:
-            # Avoid a startup race by checking once more if the first info arrived
-            # before the media player actually registered the segment.
             if saw_owned:
                 return
             time.sleep(0.2)
             if "No track currently" in media_info():
                 raise RuntimeError("Audio player stopped before playback")
         elif info and "Track:" in info:
-            # A different app took over the shared Termux:API media player.
             raise RuntimeError("Audio was interrupted by another player")
         time.sleep(POLL_SECONDS)
     raise RuntimeError("Playback timed out")
 
 
+def record_first_play(run_id: str, started: float, claimed: float,
+                      ready: float, play_ack: float, count: int) -> None:
+    """Timings only; never write the clipboard text or audio."""
+    report = (
+        f"segments={count}\n"
+        f"startup_claim_ms={round((claimed - started) * 1000)}\n"
+        f"first_audio_ready_ms={round((ready - started) * 1000)}\n"
+        f"first_play_request_ms={round((play_ack - started) * 1000)}\n"
+        f"player_command_ms={round((play_ack - ready) * 1000)}\n"
+    )
+    try:
+        with LOCK_FILE.open("a+") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            if still_active(run_id):
+                TIMING_FILE.write_text(report, encoding="utf-8")
+            fcntl.flock(handle, fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
 def run(text: str) -> int:
-    if shutil.which("edge-tts") is None or shutil.which("termux-media-player") is None:
-        print("Missing edge-tts or termux-media-player; run install-launcher.sh", file=sys.stderr)
+    started = time.monotonic()
+    run_id = uuid.uuid4().hex[:16]
+    if not toggle_session(run_id):
+        # A second tap is STOP, including while speech is still synthesizing.
+        return 0
+    claimed = time.monotonic()
+    if importlib.util.find_spec("edge_tts") is None and edge_tts is None:
+        print("Missing edge-tts Python library; run install-launcher.sh", file=sys.stderr)
+        clear_if_active(run_id)
+        return 2
+    if shutil.which("termux-media-player") is None:
+        print("Missing termux-media-player; run install-launcher.sh", file=sys.stderr)
+        clear_if_active(run_id)
         return 2
     parts = split_chunks(text)
     if not parts:
         print("No text received", file=sys.stderr)
+        clear_if_active(run_id)
         return 1
-    run_id = uuid.uuid4().hex[:16]
-    claim(run_id)
-    # Exclusively local temporary files, never Downloads or gallery.
     with tempfile.TemporaryDirectory(prefix="tts-launcher-") as temp:
         folder = Path(temp)
-        # Bounded future queue: at most two active conversions and one pending.
         with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as pool:
             futures: dict[int, concurrent.futures.Future[Path]] = {}
             def submit(index: int) -> None:
                 path = folder / f"{AUDIO_PREFIX}{run_id}-{index:04d}.mp3"
                 futures[index] = pool.submit(synthesize, parts[index], path, run_id)
-
             try:
                 for i in range(min(WORKERS, len(parts))):
                     submit(i)
@@ -205,10 +282,16 @@ def run(text: str) -> int:
                     file_path = futures.pop(i).result()
                     if i + WORKERS < len(parts):
                         submit(i + WORKERS)
-                    play_file(file_path, run_id)
+                    if i == 0:
+                        ready = time.monotonic()
+                        def first_started() -> None:
+                            record_first_play(run_id, started, claimed, ready,
+                                              time.monotonic(), len(parts))
+                        play_file(file_path, run_id, on_started=first_started)
+                    else:
+                        play_file(file_path, run_id)
                     file_path.unlink(missing_ok=True)
             finally:
-                # Do not stop music from other apps or a newer launcher request.
                 stop_owned(run_id)
                 clear_if_active(run_id)
     return 0

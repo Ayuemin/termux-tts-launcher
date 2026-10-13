@@ -5,7 +5,7 @@
         <package android:name="com.termux" />
     </queries>
     <application android:allowBackup="false" android:label="Озвучить"
-        android:icon="@drawable/speaker_icon" android:theme="@style/LauncherTheme">
+        android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:theme="@style/LauncherTheme">
         <activity android:name=".LaunchActivity" android:exported="true"
             android:excludeFromRecents="true">
             <intent-filter>
