@@ -11,6 +11,7 @@ if ! command -v python >/dev/null; then pkg install -y python; fi
 if ! python -c 'import edge_tts' >/dev/null 2>&1; then
   python -m pip install edge-tts
 fi
+bash "$HERE/install-edge-tts-isolated.sh"
 install -m 755 "$HERE/tts-launcher-stream" "$PREFIX/bin/tts-launcher-stream"
-echo 'Установлен только экспериментальный обработчик tts-launcher-stream.'
+echo 'Установлен экспериментальный обработчик и отдельная edge-tts 7.3.1.'
 echo 'Команды tts и tts-launcher-play НЕ изменены.'

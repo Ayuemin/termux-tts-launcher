@@ -13,6 +13,22 @@ import re
 import sys
 import time
 
+# Shared app-owned Edge TTS 7.3.1, leaving system packages unchanged.
+EDGE_TTS_DIR = Path.home() / '.local/share/termux-tts-launcher/edge-tts-7.3.1'
+
+
+def prefer_isolated_edge_tts() -> bool:
+    if not EDGE_TTS_DIR.is_dir():
+        return False
+    location = str(EDGE_TTS_DIR)
+    if location in sys.path:
+        sys.path.remove(location)
+    sys.path.insert(0, location)
+    return True
+
+
+prefer_isolated_edge_tts()
+
 VOICE = 'ru-RU-DmitryNeural'
 HOST = '127.0.0.1'
 MAX_TEXT_BYTES = 96 * 1024

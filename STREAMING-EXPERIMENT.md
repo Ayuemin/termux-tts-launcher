@@ -14,7 +14,9 @@
 
 ```bash
 cd ~/termux-tts-launcher
-git fetch origin feature/streaming-tts
+git fetch origin main feature/streaming-tts
+git pull --ff-only origin main
+bash termux/install-launcher.sh
 git show origin/feature/streaming-tts:termux/tts-launcher-stream > "$PREFIX/bin/tts-launcher-stream"
 chmod 755 "$PREFIX/bin/tts-launcher-stream"
 ```
@@ -40,3 +42,7 @@ tail -n 30 ~/.cache/termux-tts-launcher-stream/last-events.log
 - Android MediaPlayer поддерживает сетевые источники, но не гарантирована поддержка бесконечного chunked MP3-потока. При необходимости следующим шагом станет реализация собственного MP3-декодера на MediaCodec + AudioTrack, но для первого теста без тяжёлых зависимостей используем системный MediaPlayer.
 - Текст передаётся Microsoft Edge TTS. Android foreground service отображает уведомление при активном воспроизведении.
 - Заявленное сокращение задержки до 5–7 секунд — цель эксперимента, не гарантированный результат. Для теста используйте одинаковый текст и интернет-соединение.
+
+### Исправление ошибки NoAudioReceived (14 октября 2026)
+
+Если глобальная `edge-tts 7.2.8` перестала получать звук, обе программы используют локальную, подтверждённую тестом `7.3.1` в `~/.local/share/termux-tts-launcher/edge-tts-7.3.1/`. После установки скрипта из этой ветки отдельная потоковая версия обращается к новой библиотеке, не затрагивая другие Python-проекты. Стандартный APK и экспериментальный APK переустанавливать не требуется; обновляются только скрипты Termux.
