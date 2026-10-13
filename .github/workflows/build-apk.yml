@@ -4,6 +4,8 @@ on:
     branches: [main]
     paths:
       - 'android/**'
+      - 'termux/**'
+      - 'tests/**'
       - '.github/workflows/build-apk.yml'
   workflow_dispatch:
 
