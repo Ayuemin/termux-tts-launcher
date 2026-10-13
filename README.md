@@ -57,6 +57,31 @@ bash termux/install-launcher.sh
 cat ~/.cache/termux-tts-launcher/last-timing.txt
 ```
 
+### Исправление: кнопка остановки перезапускает звук
+
+Для обновления исправленного обработчика **APK переустанавливать не нужно**:
+
+```bash
+cd ~/termux-tts-launcher
+git pull --ff-only
+bash termux/install-launcher.sh
+```
+
+Если Android продолжает играть MP3 после неожиданного выхода Python,
+обработчик сохраняет маркер сеанса и при следующем нажатии пытается остановить
+именно этот фрагмент, а не заново озвучить скопированный текст.
+
+Для диагностики без сохранения текста буфера:
+
+```bash
+cat ~/.cache/termux-tts-launcher/last-timing.txt
+tail -n 25 ~/.cache/termux-tts-launcher/last-events.log
+```
+
+Показатель `first_audio_ready_ms` отсчитывается от запуска Python до готовности
+первого MP3, а `player_command_ms` измеряет задержку запуска плеера.
+Реальная задержка также зависит от сервиса Microsoft и сети.
+
 ### 2. Разрешение запуска сторонних команд
 
 Откройте файл `~/.termux/termux.properties` и **добавьте или измените** строку:
