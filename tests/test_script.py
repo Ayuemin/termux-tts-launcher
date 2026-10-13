@@ -160,7 +160,7 @@ class ChunkingTests(unittest.TestCase):
 
     def test_status_failure_keeps_marker_and_does_not_log_clipboard(self):
         with tempfile.TemporaryDirectory() as td:
-            def fake_synthesize(chunk, path, run_id):
+            def fake_synthesize(chunk, path, run_id, markers=None, origin=None):
                 path.write_bytes(b"MP3")
                 return path
             def fake_play(path, run_id, on_started=None):

@@ -181,18 +181,48 @@ def clear_if_active(run_id: str) -> None:
         fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def synthesize(chunk: str, dest: Path, run_id: str) -> Path:
+async def save_audio_with_timing(communicate, dest: Path,
+                                 origin: float, markers: dict[str, int]) -> None:
+    """Write exactly the audio packets used by Communicate.save(), with timestamps.
+
+    Only the first fragment uses this diagnostic path. Playback is unchanged.
+    """
+    with dest.open("wb") as audio:
+        async for item in communicate.stream():
+            now_ms = round((time.monotonic() - origin) * 1000)
+            markers.setdefault("first_stream_event_ms", now_ms)
+            if item["type"] == "audio":
+                data = item["data"]
+                if data:
+                    markers.setdefault("first_audio_packet_ms", now_ms)
+                    audio.write(data)
+
+
+def synthesize(chunk: str, dest: Path, run_id: str,
+               markers: dict[str, int] | None = None,
+               origin: float | None = None) -> Path:
     """Call edge-tts as a library, avoiding a CLI process for each fragment."""
     error = ""
     for attempt in range(ATTEMPTS):
         if not still_active(run_id):
             raise RuntimeError("Playback replaced by another request")
         try:
+            if markers is not None and origin is not None:
+                markers.clear()  # Retries must not expose stale packet timings.
+                markers["first_attempt_number"] = attempt + 1
+                markers["first_synthesis_start_ms"] = round((time.monotonic() - origin) * 1000)
             global edge_tts
             if edge_tts is None:
                 import edge_tts as edge_tts_module
                 edge_tts = edge_tts_module
-            asyncio.run(edge_tts.Communicate(chunk, voice=VOICE).save(str(dest)))
+            if markers is not None and origin is not None:
+                markers["first_stream_request_ms"] = round((time.monotonic() - origin) * 1000)
+                asyncio.run(save_audio_with_timing(
+                    edge_tts.Communicate(chunk, voice=VOICE), dest, origin, markers))
+                markers["first_synthesis_done_ms"] = round((time.monotonic() - origin) * 1000)
+            else:
+                # Original save() path for every fragment after the first.
+                asyncio.run(edge_tts.Communicate(chunk, voice=VOICE).save(str(dest)))
             if dest.exists() and dest.stat().st_size:
                 return dest
             error = "edge-tts returned no audio"
@@ -249,7 +279,8 @@ def play_file(path: Path, run_id: str, on_started=None) -> None:
 
 
 def record_first_play(run_id: str, started: float, claimed: float,
-                      ready: float, play_ack: float, count: int) -> None:
+                      ready: float, play_ack: float, count: int,
+                      markers: dict[str, int] | None = None) -> None:
     """Timings only; never write the clipboard text or audio."""
     report = (
         f"segments={count}\n"
@@ -258,6 +289,13 @@ def record_first_play(run_id: str, started: float, claimed: float,
         f"first_play_request_ms={round((play_ack - started) * 1000)}\n"
         f"player_command_ms={round((play_ack - ready) * 1000)}\n"
     )
+    if markers is not None:
+        # Only fixed names and numeric measurements; never copied text or audio.
+        for key in ("first_attempt_number", "first_synthesis_start_ms",
+                    "first_stream_request_ms", "first_stream_event_ms",
+                    "first_audio_packet_ms", "first_synthesis_done_ms"):
+            if key in markers:
+                report += f"{key}={markers[key]}\n"
     try:
         with LOCK_FILE.open("a+") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
@@ -294,9 +332,14 @@ def run(text: str) -> int:
             first_play_accepted = False
             finished_normally = False
             futures: dict[int, concurrent.futures.Future[Path]] = {}
+            first_markers: dict[str, int] = {}
             def submit(index: int) -> None:
                 path = folder / f"{AUDIO_PREFIX}{run_id}-{index:04d}.mp3"
-                futures[index] = pool.submit(synthesize, parts[index], path, run_id)
+                if index == 0:
+                    futures[index] = pool.submit(synthesize, parts[index], path,
+                                                 run_id, first_markers, started)
+                else:
+                    futures[index] = pool.submit(synthesize, parts[index], path, run_id)
             try:
                 for i in range(min(WORKERS, len(parts))):
                     submit(i)
@@ -313,7 +356,7 @@ def run(text: str) -> int:
                             first_play_accepted = True
                             log_event("first_audio_started")
                             record_first_play(run_id, started, claimed, ready,
-                                              time.monotonic(), len(parts))
+                                              time.monotonic(), len(parts), first_markers)
                         play_file(file_path, run_id, on_started=first_started)
                     else:
                         play_file(file_path, run_id)

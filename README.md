@@ -133,3 +133,30 @@ GitHub → [Actions](https://github.com/Ayuemin/termux-tts-launcher/actions/work
 - `tests/` — локальные проверки разбиения текста и команд управления.
 - `.github/workflows/build-apk.yml` — автоматическая сборка debug APK.
 
+
+### Диагностика ожидания ответа Microsoft Edge TTS
+
+Обновить только обработчик Termux (APK и команда `tts` не меняются):
+
+```bash
+cd ~/termux-tts-launcher
+git pull --ff-only
+bash termux/install-launcher.sh
+```
+
+Запусти обычную озвучку из боковой панели, **дождись начала речи** и посмотри:
+
+```bash
+cat ~/.cache/termux-tts-launcher/last-timing.txt
+```
+
+Новые значения (миллисекунды от начала выполнения Python):
+
+- `first_synthesis_start_ms`: начало подготовки первого фрагмента.
+- `first_stream_request_ms`: вызов Edge TTS после загрузки библиотеки.
+- `first_stream_event_ms`: первый ответ, полученный через поток Edge TTS (может быть метаданными, не обязательно звук).
+- `first_audio_packet_ms`: первый MP3-пакет, полученный от сервиса.
+- `first_synthesis_done_ms`: первый MP3 полностью готов.
+- `first_attempt_number`: с какой попытки удалось получить фрагмент.
+
+Прежние `first_audio_ready_ms` и `first_play_request_ms` также сохраняются. Время до запуска Python в эти цифры не входит. Диагностика **не сохраняет текст и звук**. Пока воспроизведение работает по-прежнему: плеер запускается после полного MP3-фрагмента, а не по первому пакету. Отправь значения, чтобы выбрать следующий шаг оптимизации.
