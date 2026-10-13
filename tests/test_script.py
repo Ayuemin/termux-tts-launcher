@@ -3,6 +3,7 @@ from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
+import subprocess
 import threading
 import unittest
 from unittest.mock import patch
@@ -125,9 +126,62 @@ class ChunkingTests(unittest.TestCase):
                  patch.object(script, "LOCK_FILE", Path(td) / "lock"), \
                  patch.object(script, "stop_owned"):
                 script.ACTIVE_FILE.write_text("old 12345", encoding="ascii")
-                with patch.object(script.os, "kill", side_effect=ProcessLookupError):
+                with patch.object(script.os, "kill", side_effect=ProcessLookupError), \
+                     patch.object(script, "media_info", return_value="No track currently!"):
                     self.assertTrue(script.toggle_session("fresh"))
                 self.assertTrue(script.still_active("fresh"))
+
+    def test_orphan_audio_is_stopped_not_restarted(self):
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(script, "STATE_DIR", Path(td)), \
+                 patch.object(script, "ACTIVE_FILE", Path(td) / "active"), \
+                 patch.object(script, "LOCK_FILE", Path(td) / "lock"), \
+                 patch.object(script, "EVENTS_FILE", Path(td) / "events.log"), \
+                 patch.object(script.os, "kill", side_effect=ProcessLookupError), \
+                 patch.object(script, "media_info", return_value="Status: Playing\nTrack: tts-launcher-old-0000.mp3"), \
+                 patch.object(script, "stop_owned") as stop:
+                script.ACTIVE_FILE.write_text("old 12345", encoding="ascii")
+                self.assertFalse(script.toggle_session("new"))
+                self.assertFalse(script.ACTIVE_FILE.exists())
+                stop.assert_called_once_with("old")
+                self.assertIn("tap_stop_orphan", script.EVENTS_FILE.read_text())
+
+    def test_lost_media_info_does_not_restart_orphan_audio(self):
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(script, "STATE_DIR", Path(td)), \
+                 patch.object(script, "ACTIVE_FILE", Path(td) / "active"), \
+                 patch.object(script, "LOCK_FILE", Path(td) / "lock"), \
+                 patch.object(script.os, "kill", side_effect=ProcessLookupError), \
+                 patch.object(script, "media_info", side_effect=subprocess.TimeoutExpired("info", 12)), \
+                 patch.object(script, "stop_owned"):
+                script.ACTIVE_FILE.write_text("old 12345", encoding="ascii")
+                self.assertFalse(script.toggle_session("new"))
+                self.assertFalse(script.ACTIVE_FILE.exists())
+
+    def test_status_failure_keeps_marker_and_does_not_log_clipboard(self):
+        with tempfile.TemporaryDirectory() as td:
+            def fake_synthesize(chunk, path, run_id):
+                path.write_bytes(b"MP3")
+                return path
+            def fake_play(path, run_id, on_started=None):
+                if on_started:
+                    on_started()
+                raise RuntimeError("status unavailable")
+            with patch.object(script, "STATE_DIR", Path(td)), \
+                 patch.object(script, "ACTIVE_FILE", Path(td) / "active"), \
+                 patch.object(script, "LOCK_FILE", Path(td) / "lock"), \
+                 patch.object(script, "TIMING_FILE", Path(td) / "timing.txt"), \
+                 patch.object(script, "EVENTS_FILE", Path(td) / "events.log"), \
+                 patch.object(script.importlib.util, "find_spec", return_value=object()), \
+                 patch.object(script.shutil, "which", return_value="player"), \
+                 patch.object(script, "synthesize", side_effect=fake_synthesize), \
+                 patch.object(script, "play_file", side_effect=fake_play):
+                with self.assertRaises(RuntimeError):
+                    script.run("Секретный текст из буфера")
+                self.assertTrue(script.ACTIVE_FILE.exists())
+                self.assertIn("player_status_uncertain", script.EVENTS_FILE.read_text())
+                self.assertNotIn("Секретный", script.EVENTS_FILE.read_text())
+                self.assertNotIn("Секретный", script.TIMING_FILE.read_text())
 
     def test_cancelled_session_cannot_start_media(self):
         with tempfile.TemporaryDirectory() as td:
