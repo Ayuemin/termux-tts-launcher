@@ -40,6 +40,30 @@ TIMING_FILE = STATE_DIR / "last-timing.txt"
 EVENTS_FILE = STATE_DIR / "last-events.log"
 
 
+STALE_AUDIO_SECONDS = 24 * 60 * 60
+
+
+def cleanup_stale_audio_dirs() -> None:
+    """Remove only old temporary directories belonging to this launcher.
+
+    TemporaryDirectory handles normal exits. This only catches leftovers from
+    abrupt process termination, and never targets new or symlinked directories.
+    Run only when starting new speech, not when the button stops it.
+    """
+    try:
+        temp_root = Path(tempfile.gettempdir())
+        cutoff = time.time() - STALE_AUDIO_SECONDS
+        for entry in temp_root.glob("tts-launcher-*"):
+            try:
+                if (entry.is_dir() and not entry.is_symlink()
+                        and entry.stat().st_mtime < cutoff):
+                    shutil.rmtree(entry)
+            except OSError:
+                continue
+    except OSError:
+        pass
+
+
 def normalize(text: str) -> str:
     text = (text or "").replace("\u00a0", " ").replace("\r", "")
     text = re.sub(r"[ \t]+", " ", text)
@@ -326,6 +350,7 @@ def run(text: str) -> int:
         print("No text received", file=sys.stderr)
         clear_if_active(run_id)
         return 1
+    cleanup_stale_audio_dirs()
     with tempfile.TemporaryDirectory(prefix="tts-launcher-") as temp:
         folder = Path(temp)
         with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as pool:
