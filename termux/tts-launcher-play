@@ -145,6 +145,7 @@ def play_file(path: Path, run_id: str) -> None:
     # The API command returns immediately; wait for actual playback completion.
     # 'info' changes to 'No track currently!' after its completion listener runs.
     saw_owned = False
+    no_status_count = 0
     # A speech segment longer than 20 minutes is not expected at these sizes.
     deadline = time.monotonic() + 20 * 60
     while time.monotonic() < deadline:
@@ -152,6 +153,12 @@ def play_file(path: Path, run_id: str) -> None:
             stop_owned(run_id)
             return
         info = media_info()
+        if not info:
+            no_status_count += 1
+            if no_status_count >= 4:
+                raise RuntimeError("Termux:API media player is unavailable")
+        else:
+            no_status_count = 0
         if owned_track(info, run_id):
             saw_owned = True
         elif "No track currently" in info:
