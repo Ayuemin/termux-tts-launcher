@@ -16,8 +16,11 @@ if ! command -v edge-tts >/dev/null; then
   echo 'Устанавливаю edge-tts (без браузера и FFmpeg)...'
   python -m pip install edge-tts
 fi
+# Prefer the repaired Edge TTS locally without upgrading anyone else's packages.
+bash "$HERE/install-edge-tts-isolated.sh"
 install -m 755 "$HERE/tts-launcher-play" "$TARGET"
 echo "Готово: $TARGET"
+echo 'Используется изолированная edge-tts 7.3.1; глобальные Python-пакеты не обновлены.'
 echo 'Новая команда: tts-launcher-play. Команда tts не изменена.'
 echo 'Для воспроизведения нужно приложение Termux:API из того же источника, что и Termux.'
 echo 'Один раз задайте allow-external-apps=true в ~/.termux/termux.properties.'
