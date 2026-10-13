@@ -37,6 +37,7 @@ ACTIVE_FILE = STATE_DIR / "active"
 LOCK_FILE = STATE_DIR / "active.lock"
 AUDIO_PREFIX = "tts-launcher-"
 TIMING_FILE = STATE_DIR / "last-timing.txt"
+EVENTS_FILE = STATE_DIR / "last-events.log"
 
 
 def normalize(text: str) -> str:
@@ -97,6 +98,18 @@ def stop_owned(run_id: str | None = None) -> None:
         pass
 
 
+def log_event(event: str) -> None:
+    """Log playback state without storing copied text."""
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        if EVENTS_FILE.exists() and EVENTS_FILE.stat().st_size > 16 * 1024:
+            EVENTS_FILE.write_text("", encoding="ascii")
+        with EVENTS_FILE.open("a", encoding="ascii") as stream:
+            stream.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {event}\n")
+    except OSError:
+        pass
+
+
 def active_session() -> tuple[str, int | None] | None:
     """Read the active token and PID; old token-only installations still work."""
     try:
@@ -125,7 +138,7 @@ def pid_running(pid: int | None) -> bool:
 
 
 def toggle_session(run_id: str) -> bool:
-    """First tap starts; second tap cancels the currently active run."""
+    """Start on idle, stop a live worker or its orphaned Android audio."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     with LOCK_FILE.open("a+") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
@@ -133,12 +146,21 @@ def toggle_session(run_id: str) -> bool:
             previous = active_session()
             if previous is not None:
                 old_id, pid = previous
+                live_worker = pid_running(pid)
+                orphan_audio = False
+                if not live_worker:
+                    try:
+                        orphan_audio = owned_track(media_info(), old_id)
+                    except (OSError, subprocess.TimeoutExpired):
+                        orphan_audio = True  # Unknown status: never auto-replay.
                 ACTIVE_FILE.unlink(missing_ok=True)
-                # Never stop a track belonging to another app.
-                stop_owned(old_id)
-                if pid_running(pid):
+                if live_worker or orphan_audio:
+                    stop_owned(old_id)
+                    log_event("tap_stop_active" if live_worker else "tap_stop_orphan")
                     return False
+                log_event("recovered_stale_session")
             ACTIVE_FILE.write_text(f"{run_id} {os.getpid()}\n", encoding="ascii")
+            log_event("tap_start")
             return True
         finally:
             fcntl.flock(handle, fcntl.LOCK_UN)
@@ -269,6 +291,8 @@ def run(text: str) -> int:
     with tempfile.TemporaryDirectory(prefix="tts-launcher-") as temp:
         folder = Path(temp)
         with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as pool:
+            first_play_accepted = False
+            finished_normally = False
             futures: dict[int, concurrent.futures.Future[Path]] = {}
             def submit(index: int) -> None:
                 path = folder / f"{AUDIO_PREFIX}{run_id}-{index:04d}.mp3"
@@ -285,15 +309,31 @@ def run(text: str) -> int:
                     if i == 0:
                         ready = time.monotonic()
                         def first_started() -> None:
+                            nonlocal first_play_accepted
+                            first_play_accepted = True
+                            log_event("first_audio_started")
                             record_first_play(run_id, started, claimed, ready,
                                               time.monotonic(), len(parts))
                         play_file(file_path, run_id, on_started=first_started)
                     else:
                         play_file(file_path, run_id)
                     file_path.unlink(missing_ok=True)
+                finished_normally = True
+            except Exception as exc:
+                log_event("worker_error_" + type(exc).__name__)
+                raise
             finally:
-                stop_owned(run_id)
-                clear_if_active(run_id)
+                if still_active(run_id):
+                    if finished_normally or not first_play_accepted:
+                        stop_owned(run_id)
+                        clear_if_active(run_id)
+                        log_event("finished" if finished_normally else "failed_before_audio")
+                    else:
+                        # Keep stale token if the player might still be audible.
+                        # Next tap detects and stops the orphan instead of replaying.
+                        log_event("player_status_uncertain")
+                else:
+                    log_event("worker_cancelled")
     return 0
 
 
