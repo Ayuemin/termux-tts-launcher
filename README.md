@@ -23,7 +23,7 @@
 pkg update -y
 pkg install -y git nano
 cd ~
-git clone --branch v1.1.0 --depth 1 https://github.com/Ayuemin/termux-tts-launcher.git
+git clone --branch v1.2.0 --depth 1 https://github.com/Ayuemin/termux-tts-launcher.git
 bash ~/termux-tts-launcher/termux/install-launcher.sh
 ```
 
@@ -54,8 +54,10 @@ termux-reload-settings
 
 ### Шаг 4. Установите «Озвучить»
 
-1. [Скачайте APK «Озвучить» v1.1.0](https://github.com/Ayuemin/termux-tts-launcher/releases/download/v1.1.0/ozvuchit-v1.1.0.apk).
+1. [Скачайте APK «Озвучить» v1.2.0](https://github.com/Ayuemin/termux-tts-launcher/releases/download/v1.2.0/ozvuchit-v1.2.0.apk).
 2. Откройте скачанный файл и установите приложение. Если телефон запросит разрешение на установку из этого источника, предоставьте его.
+
+> **Обновление с версии 1.1.0:** начиная с v1.2.0 приложение подписано постоянным релизным ключом, а прежние сборки — отладочным. Android не позволяет установить обновление поверх приложения с другой подписью, поэтому для перехода с v1.1.0 нужно сначала удалить старую версию, а затем установить v1.2.0. Дальнейшие обновления будут ставиться поверх без переустановки.
 3. Запустите «Озвучить». Если появится запрос **Run commands in Termux environment** («Запуск команд в среде Termux»), разрешите его. Если запроса нет, проверьте **Настройки Android → Приложения → Озвучить → Разрешения → Дополнительные разрешения**.
 
 ### Шаг 5. Начните пользоваться
@@ -74,7 +76,7 @@ termux-reload-settings
 
 Для синтеза речи текст передаётся сервису Microsoft через интернет. Не используйте приложение для конфиденциальных текстов. Максимальный объём текста — 96 КиБ. Временные звуковые файлы удаляются автоматически, служебные журналы ограничены по размеру.
 
-Исходный код и сведения о выпуске: [«Озвучить» v1.1.0](https://github.com/Ayuemin/termux-tts-launcher/releases/tag/v1.1.0).
+Исходный код и сведения о выпуске: [«Озвучить» v1.2.0](https://github.com/Ayuemin/termux-tts-launcher/releases/tag/v1.2.0).
 
 ## Лицензия
 

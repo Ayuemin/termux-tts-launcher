@@ -1,12 +1,9 @@
-name: Publish Stable Release v1.1.0
+name: Publish Release
 
 on:
   push:
-    branches: [main]
-    paths:
-      - '.github/workflows/release.yml'
-      - 'RELEASE_NOTES.md'
-      - 'android/app/build.gradle'
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -14,7 +11,7 @@ permissions:
 
 jobs:
   publish:
-    if: github.repository == 'Ayuemin/termux-tts-launcher' && github.ref == 'refs/heads/main'
+    if: github.repository == 'Ayuemin/termux-tts-launcher'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,35 +27,58 @@ jobs:
         run: sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0'
       - name: Run player regression tests
         run: python3 -m unittest discover -s tests -v
-      - name: Build personal-use debug-signed APK
-        working-directory: android
-        run: gradle --no-daemon :app:assembleDebug
-      - name: Verify APK version and prepare release files
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         shell: bash
         run: |
           set -euo pipefail
-          APK=android/app/build/outputs/apk/debug/app-debug.apk
+          if [ -z "${KEYSTORE_BASE64:-}" ]; then
+            echo "::error::Secret KEYSTORE_BASE64 is not configured. Cannot build a signed release."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          ls -l "$RUNNER_TEMP/release.jks"
+      - name: Build release-signed APK
+        working-directory: android
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: gradle --no-daemon :app:assembleRelease
+      - name: Verify APK version and signature, prepare release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=android/app/build/outputs/apk/release/app-release.apk
           test -s "$APK"
-          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -F "versionName='1.1.0'"
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          "$BT/aapt" dump badging "$APK" | grep -F "versionName='1.2.0'"
+          "$BT/aapt" dump badging "$APK" | grep -F "versionCode='4'"
+          if "$BT/apksigner" verify --print-certs "$APK" | grep -F 'CN=Android Debug'; then
+            echo "::error::APK is signed with the Android debug key. Refusing to publish."
+            exit 1
+          fi
+          "$BT/apksigner" verify --print-certs "$APK"
           mkdir -p dist
-          cp "$APK" dist/ozvuchit-v1.1.0.apk
-          (cd dist && sha256sum ozvuchit-v1.1.0.apk > SHA256SUMS.txt)
+          cp "$APK" dist/ozvuchit-v1.2.0.apk
+          (cd dist && sha256sum ozvuchit-v1.2.0.apk > SHA256SUMS.txt)
           cat dist/SHA256SUMS.txt
-      - name: Create immutable GitHub release tag and upload APK
+      - name: Create GitHub release and upload APK
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          TAG=v1.1.0
+          TAG=v1.2.0
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "::error::GitHub Release $TAG already exists. Refusing to overwrite a finalized release."
             exit 1
           fi
           gh release create "$TAG" \
-            dist/ozvuchit-v1.1.0.apk \
+            dist/ozvuchit-v1.2.0.apk \
             dist/SHA256SUMS.txt \
-            --target "$GITHUB_SHA" \
-            --title 'Озвучить v1.1.0 — стабильная версия' \
+            --verify-tag \
+            --title 'Озвучить v1.2.0 — постоянная подпись' \
             --notes-file RELEASE_NOTES.md \
             --latest
