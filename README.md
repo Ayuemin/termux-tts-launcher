@@ -22,6 +22,7 @@
 ```bash
 pkg update -y
 pkg install -y git nano
+cd ~
 git clone --branch v1.1.0 --depth 1 https://github.com/Ayuemin/termux-tts-launcher.git
 bash ~/termux-tts-launcher/termux/install-launcher.sh
 ```
@@ -37,7 +38,7 @@ mkdir -p ~/.termux
 nano ~/.termux/termux.properties
 ```
 
-Добавьте в файл строку:
+Добавьте в файл строку (если параметр уже есть, замените его, не создавая дубликат):
 
 ```properties
 allow-external-apps=true
