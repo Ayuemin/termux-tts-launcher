@@ -1,5 +1,11 @@
 plugins { id 'com.android.application' }
 
+// Release signing is supplied through the environment so that no key material
+// ever lives in the repository. See README / release workflow for variable names.
+def keystoreFile = System.getenv('KEYSTORE_FILE')
+def keystorePassword = System.getenv('KEYSTORE_PASSWORD')
+def keyAliasName = System.getenv('KEY_ALIAS')
+
 android {
     namespace 'io.github.ayuemin.ttslauncher'
     compileSdk 35
@@ -7,11 +13,53 @@ android {
         applicationId 'io.github.ayuemin.ttslauncher'
         minSdk 26
         targetSdk 35
-        versionCode 3
-        versionName '1.1.0'
+        versionCode 4
+        versionName '1.2.0'
     }
+
+    signingConfigs {
+        release {
+            if (keystoreFile) {
+                storeFile file(keystoreFile)
+                storePassword keystorePassword
+                keyAlias keyAliasName
+                // PKCS12 keystores use a single password for the store and the key.
+                keyPassword keystorePassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+// A release build must never silently fall back to the debug key. Refuse to run
+// :app:assembleRelease / :app:bundleRelease unless signing is fully configured.
+gradle.taskGraph.whenReady { graph ->
+    def buildsRelease = graph.allTasks.any {
+        it.project.path == project.path &&
+            (it.name == 'assembleRelease' || it.name == 'bundleRelease')
+    }
+    if (buildsRelease) {
+        def missing = []
+        if (!keystoreFile) missing << 'KEYSTORE_FILE'
+        if (!keystorePassword) missing << 'KEYSTORE_PASSWORD'
+        if (!keyAliasName) missing << 'KEY_ALIAS'
+        if (!missing.isEmpty()) {
+            throw new GradleException(
+                'Release signing is not configured. Missing environment variable(s): ' +
+                missing.join(', ') + '. Set them before building a release.')
+        }
+        if (!file(keystoreFile).exists()) {
+            throw new GradleException("KEYSTORE_FILE points to a missing file: ${keystoreFile}")
+        }
     }
 }
