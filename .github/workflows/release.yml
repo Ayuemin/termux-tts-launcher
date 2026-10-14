@@ -1,0 +1,64 @@
+name: Publish Stable Release v1.1.0
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/release.yml'
+      - 'RELEASE_NOTES.md'
+      - 'android/app/build.gradle'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.repository == 'Ayuemin/termux-tts-launcher' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Install Android SDK 35
+        run: sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Run player regression tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Build personal-use debug-signed APK
+        working-directory: android
+        run: gradle --no-daemon :app:assembleDebug
+      - name: Verify APK version and prepare release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=android/app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep -F "versionName='1.1.0'"
+          mkdir -p dist
+          cp "$APK" dist/ozvuchit-v1.1.0.apk
+          (cd dist && sha256sum ozvuchit-v1.1.0.apk > SHA256SUMS.txt)
+          cat dist/SHA256SUMS.txt
+      - name: Create immutable GitHub release tag and upload APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG=v1.1.0
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::GitHub Release $TAG already exists. Refusing to overwrite a finalized release."
+            exit 1
+          fi
+          gh release create "$TAG" \
+            dist/ozvuchit-v1.1.0.apk \
+            dist/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" \
+            --title 'Озвучить v1.1.0 — стабильная версия' \
+            --notes-file RELEASE_NOTES.md \
+            --latest
